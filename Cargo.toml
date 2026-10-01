@@ -1,0 +1,21 @@
+[package]
+name = "photo-viewer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+slint = "1.9"
+i-slint-core = "1.18"
+i-slint-backend-winit = "1.9"
+winit = "0.30"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif", "tiff"] }
+rfd = "0.15"
+lru = "0.12"
+rayon = "1.10"
+
+[build-dependencies]
+slint-build = "1.9"
+
+[[example]]
+name = "gen_images"
+path = "examples/gen_images.rs"

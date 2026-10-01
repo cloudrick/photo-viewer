@@ -1,0 +1,513 @@
+import { Button, Slider } from "std-widgets.slint";
+
+component IconButton inherits Rectangle {
+    in property <string> text: "";
+    in property <string> icon: "";
+    in property <string> tooltip: "";
+    in property <bool> active: false;
+    callback clicked();
+
+    width: 36px;
+    height: 36px;
+    border-radius: 6px;
+    background: touch.pressed ? #404040 : (touch.has-hover ? #333333 : (active ? #1e3a8a : transparent));
+    border-width: active ? 1px : 0px;
+    border-color: active ? #3b82f6 : transparent;
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    Text {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        text: root.icon != "" ? root.icon : root.text;
+        font-size: 16px;
+        color: touch.has-hover ? #ffffff : (active ? #60a5fa : #d0d0d0);
+    }
+}
+
+component ToolbarPill inherits Rectangle {
+    border-radius: 20px;
+    background: #121216e6;
+    border-width: 1px;
+    border-color: #2e2e38;
+}
+
+export component MainWindow inherits Window {
+    title: "Picasa Photo Viewer";
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    no-frame: true;
+    // Translucent Picasa dark background (RGBA with ~60% alpha for higher transparency)
+    background: #0b0b0ea0;
+
+    // Automatically forward all window key events to focus_scope
+    forward-focus: focus_scope;
+
+    // Image properties
+    in property <image> current_image;
+    in property <bool> image_loaded: false;
+    in property <string> file_name: "";
+    in property <string> file_info: "";
+    in property <string> folder_info: "";
+    in property <string> full_path: "";
+    
+    // Transform & View Mode properties
+    in property <float> zoom_factor: 1.0;
+    in property <float> offset_x: 0.0;
+    in property <float> offset_y: 0.0;
+    in property <int> rotation_angle: 0;
+    in property <float> img_natural_width: 800.0;
+    in property <float> img_natural_height: 600.0;
+    in property <bool> is_loading: false;
+    in property <string> zoom_percent_str: "100%";
+    in property <bool> is_fit_mode: true;
+    in-out property <float> mouse_x: -1.0;
+    in-out property <float> mouse_y: -1.0;
+
+    // Synchronized smooth animated properties
+    property <float> anim_zoom: root.zoom_factor;
+    property <float> anim_ox: root.offset_x;
+    property <float> anim_oy: root.offset_y;
+
+    animate anim_zoom { duration: 150ms; easing: ease-out; }
+    animate anim_ox { duration: 150ms; easing: ease-out; }
+    animate anim_oy { duration: 150ms; easing: ease-out; }
+
+    // Callbacks to Rust
+    callback prev_image_clicked();
+    callback next_image_clicked();
+    callback first_image_clicked();
+    callback last_image_clicked();
+    callback zoom_in_clicked();
+    callback zoom_out_clicked();
+    callback zoom_fit_clicked();
+    callback zoom_100_clicked();
+    callback rotate_left_clicked();
+    callback rotate_right_clicked();
+    callback delete_image_clicked();
+    callback close_requested();
+    callback open_file_clicked();
+    callback open_folder_clicked();
+    
+    callback key_pressed(string);
+    callback viewport_scrolled(float, float, float); // x, y, delta_y
+    callback viewport_dragged(float, float); // delta_x, delta_y
+    callback viewport_double_clicked();
+
+    focus_scope := FocusScope {
+        width: 100%;
+        height: 100%;
+
+        init => {
+            self.focus();
+        }
+
+        key-pressed(event) => {
+            // 1. Left / Right Arrow Keys (or A / D): Switch prev/next image
+            if (event.text == Key.LeftArrow || event.text == "a" || event.text == "A") {
+                root.prev_image_clicked();
+                return accept;
+            } else if (event.text == Key.RightArrow || event.text == "d" || event.text == "D") {
+                root.next_image_clicked();
+                return accept;
+            }
+            // 2. Up / Down Arrow Keys (or W / S): Zoom in / Zoom out
+            else if (event.text == Key.UpArrow || event.text == "w" || event.text == "W") {
+                root.zoom_in_clicked();
+                return accept;
+            } else if (event.text == Key.DownArrow || event.text == "s" || event.text == "S") {
+                root.zoom_out_clicked();
+                return accept;
+            }
+            // Other shortcuts
+            else if (event.text == Key.Home) {
+                root.first_image_clicked();
+                return accept;
+            } else if (event.text == Key.End) {
+                root.last_image_clicked();
+                return accept;
+            } else if (event.text == Key.Escape) {
+                root.close_requested();
+                return accept;
+            } else if (event.text == Key.Space) {
+                root.next_image_clicked();
+                return accept;
+            } else if (event.text == "r" || event.text == "R") {
+                root.rotate_right_clicked();
+                return accept;
+            } else if (event.text == "l" || event.text == "L") {
+                root.rotate_left_clicked();
+                return accept;
+            } else if (event.text == "+" || event.text == "=") {
+                root.zoom_in_clicked();
+                return accept;
+            } else if (event.text == "-") {
+                root.zoom_out_clicked();
+                return accept;
+            } else if (event.text == "0") {
+                root.zoom_fit_clicked();
+                return accept;
+            } else if (event.text == "1") {
+                root.zoom_100_clicked();
+                return accept;
+            } else if (event.text == Key.Delete) {
+                root.delete_image_clicked();
+                return accept;
+            }
+            return reject;
+        }
+
+        // Viewport canvas area
+        viewport := TouchArea {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+
+            property <length> last_mouse_x: 0px;
+            property <length> last_mouse_y: 0px;
+            property <bool> is_dragging: false;
+
+            pointer-event(event) => {
+                focus_scope.focus();
+                root.mouse_x = self.mouse-x / 1px;
+                root.mouse_y = self.mouse-y / 1px;
+                if (event.kind == PointerEventKind.down) {
+                    if (event.button == PointerEventButton.left) {
+                        self.is_dragging = true;
+                        self.last_mouse_x = self.mouse-x;
+                        self.last_mouse_y = self.mouse-y;
+                    }
+                } else if (event.kind == PointerEventKind.up) {
+                    self.is_dragging = false;
+                } else if (event.kind == PointerEventKind.move) {
+                    if (self.is_dragging) {
+                        let current_x = self.mouse-x;
+                        let current_y = self.mouse-y;
+                        let dx = (current_x - self.last_mouse_x) / 1px;
+                        let dy = (current_y - self.last_mouse_y) / 1px;
+                        self.last_mouse_x = current_x;
+                        self.last_mouse_y = current_y;
+                        root.viewport_dragged(dx, dy);
+                    }
+                }
+            }
+
+            scroll-event(event) => {
+                focus_scope.focus();
+                root.mouse_x = self.mouse-x / 1px;
+                root.mouse_y = self.mouse-y / 1px;
+                root.viewport_scrolled(self.mouse-x / 1px, self.mouse-y / 1px, event.delta-y / 1px);
+                return accept;
+            }
+
+            double-clicked => {
+                focus_scope.focus();
+                root.viewport_double_clicked();
+            }
+
+            // Subtle dark background vignette for Picasa photo emphasis
+            Rectangle {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                background: #00000030;
+            }
+
+            // Central Image Display
+            if (root.image_loaded) : Image {
+                x: (parent.width - self.width) / 2 + root.anim_ox * 1px;
+                y: (parent.height - self.height) / 2 + root.anim_oy * 1px;
+                width: root.img_natural_width * root.anim_zoom * 1px;
+                height: root.img_natural_height * root.anim_zoom * 1px;
+                source: root.current_image;
+                transform-rotation: root.rotation_angle * 1deg;
+            }
+
+            // Initial Prompt Screen when no image is loaded
+            if (!root.image_loaded && !root.is_loading) : Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 500px;
+                height: 250px;
+                background: #141419e8;
+                border-radius: 20px;
+                border-width: 1px;
+                border-color: #333345;
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 16px;
+                    padding: 24px;
+
+                    Text {
+                        text: "🖼️ Picasa Photo Viewer";
+                        font-size: 26px;
+                        font-weight: 700;
+                        color: #ffffff;
+                        horizontal-alignment: center;
+                    }
+
+                    Text {
+                        text: "Drag & Drop an image here, or choose an option:";
+                        font-size: 14px;
+                        color: #38bdf8;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 16px;
+
+                        Button {
+                            text: "📂 Open File";
+                            clicked => { root.open_file_clicked(); }
+                        }
+
+                        Button {
+                            text: "📁 Open Folder";
+                            clicked => { root.open_folder_clicked(); }
+                        }
+                    }
+
+                    Text {
+                        text: "Shortcuts: ◀ ▶ Switch | ▲ ▼ Zoom | Wheel Zoom | Drag Pan | Esc Close";
+                        font-size: 12px;
+                        color: #71717a;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+
+            // Loading Indicator Overlay
+            if (root.is_loading) : Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 220px;
+                height: 60px;
+                background: #0a0a0ee0;
+                border-radius: 30px;
+                border-width: 1px;
+                border-color: #38bdf840;
+
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 12px;
+                    padding: 12px;
+
+                    Text {
+                        text: "⏳ Loading 8K Image...";
+                        color: #38bdf8;
+                        font-size: 15px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // Top Info Bar (Translucent Picasa Header Overlay)
+        if (root.image_loaded) : ToolbarPill {
+            x: 20px;
+            y: 16px;
+            width: root.width - 40px;
+            height: 42px;
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                alignment: space-between;
+
+                // Left: File name & folder
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: start;
+
+                    Text {
+                        text: root.file_name;
+                        font-size: 15px;
+                        font-weight: 700;
+                        color: #ffffff;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: root.full_path;
+                        font-size: 12px;
+                        color: #94a3b8;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+
+                // Right: View Mode Badge, Resolution, Size, Index counter
+                HorizontalLayout {
+                    spacing: 14px;
+                    alignment: end;
+
+                    Rectangle {
+                        border-radius: 12px;
+                        background: root.is_fit_mode ? #1e3a8a80 : #33415580;
+                        border-width: 1px;
+                        border-color: root.is_fit_mode ? #3b82f6 : #64748b;
+                        height: 24px;
+                        width: 90px;
+                        y: (parent.height - self.height) / 2;
+
+                        Text {
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            text: root.is_fit_mode ? "Fit Screen" : "Custom Zoom";
+                            font-size: 11px;
+                            font-weight: 600;
+                            color: root.is_fit_mode ? #60a5fa : #cbd5e1;
+                        }
+                    }
+
+                    Text {
+                        text: root.file_info;
+                        font-size: 13px;
+                        color: #cbd5e1;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle {
+                        width: 1px;
+                        height: 18px;
+                        background: #475569;
+                    }
+
+                    Text {
+                        text: root.folder_info;
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: #38bdf8;
+                        vertical-alignment: center;
+                    }
+
+                    IconButton {
+                        icon: "✕";
+                        tooltip: "Close (Esc)";
+                        clicked => { root.close_requested(); }
+                    }
+                }
+            }
+        }
+
+        // Bottom Floating Toolbar (Clean Picasa Controls - No Open File/Folder buttons)
+        ToolbarPill {
+            x: (root.width - self.width) / 2;
+            y: root.height - 68px;
+            width: 460px;
+            height: 52px;
+
+            HorizontalLayout {
+                alignment: center;
+                spacing: 6px;
+                padding-left: 12px;
+                padding-right: 12px;
+
+                IconButton {
+                    icon: "◀";
+                    tooltip: "Previous Image (Left Arrow)";
+                    clicked => {
+                        focus_scope.focus();
+                        root.prev_image_clicked();
+                    }
+                }
+
+                IconButton {
+                    icon: "▶";
+                    tooltip: "Next Image (Right Arrow)";
+                    clicked => {
+                        focus_scope.focus();
+                        root.next_image_clicked();
+                    }
+                }
+
+                Rectangle { width: 1px; height: 24px; background: #333333; }
+
+                IconButton {
+                    icon: "🔍-";
+                    tooltip: "Zoom Out (Down Arrow / -)";
+                    clicked => {
+                        focus_scope.focus();
+                        root.zoom_out_clicked();
+                    }
+                }
+
+                Text {
+                    text: root.zoom_percent_str;
+                    font-size: 13px;
+                    font-weight: 600;
+                    color: #e2e8f0;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                    width: 54px;
+                }
+
+                IconButton {
+                    icon: "🔍+";
+                    tooltip: "Zoom In (Up Arrow / +)";
+                    clicked => {
+                        focus_scope.focus();
+                        root.zoom_in_clicked();
+                    }
+                }
+
+                IconButton {
+                    icon: "⛶";
+                    tooltip: "Fit Screen Mode (Esc)";
+                    active: root.is_fit_mode;
+                    clicked => {
+                        focus_scope.focus();
+                        root.zoom_fit_clicked();
+                    }
+                }
+
+                IconButton {
+                    icon: "1:1";
+                    tooltip: "100% Zoom";
+                    active: !root.is_fit_mode && root.zoom_percent_str == "100%";
+                    clicked => {
+                        focus_scope.focus();
+                        root.zoom_100_clicked();
+                    }
+                }
+
+                Rectangle { width: 1px; height: 24px; background: #333333; }
+
+                IconButton {
+                    icon: "↺";
+                    tooltip: "Rotate Left (L)";
+                    clicked => {
+                        focus_scope.focus();
+                        root.rotate_left_clicked();
+                    }
+                }
+
+                IconButton {
+                    icon: "↻";
+                    tooltip: "Rotate Right (R)";
+                    clicked => {
+                        focus_scope.focus();
+                        root.rotate_right_clicked();
+                    }
+                }
+
+                IconButton {
+                    icon: "🗑";
+                    tooltip: "Delete Image (Del)";
+                    clicked => {
+                        focus_scope.focus();
+                        root.delete_image_clicked();
+                    }
+                }
+            }
+        }
+    }
+}
