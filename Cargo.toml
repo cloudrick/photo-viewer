@@ -6,12 +6,23 @@ edition = "2021"
 [dependencies]
 slint = "1.9"
 i-slint-core = "1.18"
-i-slint-backend-winit = "1.9"
+i-slint-backend-winit = { version = "1.9", features = ["renderer-femtovg", "renderer-software"] }
 winit = "0.30"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif", "tiff"] }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Imaging",
+    "Win32_System_Com",
+] }
+image = { version = "0.25", default-features = false, features = ["rayon", "jpeg", "png", "webp", "bmp", "gif", "tiff", "ico"] }
 rfd = "0.15"
 lru = "0.12"
 rayon = "1.10"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
 
 [build-dependencies]
 slint-build = "1.9"

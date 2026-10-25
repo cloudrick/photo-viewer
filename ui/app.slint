@@ -67,13 +67,23 @@ export component MainWindow inherits Window {
     in-out property <float> mouse_y: -1.0;
 
     // Synchronized smooth animated properties
+    in-out property <bool> is_panning: false;
     property <float> anim_zoom: root.zoom_factor;
     property <float> anim_ox: root.offset_x;
     property <float> anim_oy: root.offset_y;
 
-    animate anim_zoom { duration: 150ms; easing: ease-out; }
-    animate anim_ox { duration: 150ms; easing: ease-out; }
-    animate anim_oy { duration: 150ms; easing: ease-out; }
+    animate anim_zoom {
+        duration: 240ms;
+        easing: cubic-bezier(0.16, 1.0, 0.3, 1.0);
+    }
+    animate anim_ox {
+        duration: root.is_panning ? 0ms : 240ms;
+        easing: cubic-bezier(0.16, 1.0, 0.3, 1.0);
+    }
+    animate anim_oy {
+        duration: root.is_panning ? 0ms : 240ms;
+        easing: cubic-bezier(0.16, 1.0, 0.3, 1.0);
+    }
 
     // Callbacks to Rust
     callback prev_image_clicked();
@@ -93,8 +103,10 @@ export component MainWindow inherits Window {
     
     callback key_pressed(string);
     callback viewport_scrolled(float, float, float); // x, y, delta_y
+    callback viewport_pointer_down(float, float); // x, y
     callback viewport_dragged(float, float); // delta_x, delta_y
-    callback viewport_double_clicked();
+    callback viewport_double_clicked(float, float); // x, y
+    callback viewport_clicked(float, float); // x, y
 
     focus_scope := FocusScope {
         width: 100%;
@@ -166,9 +178,12 @@ export component MainWindow inherits Window {
             width: parent.width;
             height: parent.height;
 
+            property <length> down_mouse_x: 0px;
+            property <length> down_mouse_y: 0px;
             property <length> last_mouse_x: 0px;
             property <length> last_mouse_y: 0px;
             property <bool> is_dragging: false;
+            property <bool> moved_significantly: false;
 
             pointer-event(event) => {
                 focus_scope.focus();
@@ -177,26 +192,43 @@ export component MainWindow inherits Window {
                 if (event.kind == PointerEventKind.down) {
                     if (event.button == PointerEventButton.left) {
                         self.is_dragging = true;
+                        self.moved_significantly = false;
+                        self.down_mouse_x = self.mouse-x;
+                        self.down_mouse_y = self.mouse-y;
                         self.last_mouse_x = self.mouse-x;
                         self.last_mouse_y = self.mouse-y;
+                        root.viewport_pointer_down(self.mouse-x / 1px, self.mouse-y / 1px);
                     }
                 } else if (event.kind == PointerEventKind.up) {
+                    if (self.is_dragging && !self.moved_significantly) {
+                        root.viewport_clicked(self.mouse-x / 1px, self.mouse-y / 1px);
+                    }
                     self.is_dragging = false;
+                    root.is_panning = false;
                 } else if (event.kind == PointerEventKind.move) {
                     if (self.is_dragging) {
                         let current_x = self.mouse-x;
                         let current_y = self.mouse-y;
+                        let total_dx = abs((current_x - self.down_mouse_x) / 1px);
+                        let total_dy = abs((current_y - self.down_mouse_y) / 1px);
+                        if (total_dx > 4.0 || total_dy > 4.0) {
+                            self.moved_significantly = true;
+                            root.is_panning = true;
+                        }
                         let dx = (current_x - self.last_mouse_x) / 1px;
                         let dy = (current_y - self.last_mouse_y) / 1px;
                         self.last_mouse_x = current_x;
                         self.last_mouse_y = current_y;
-                        root.viewport_dragged(dx, dy);
+                        if (self.moved_significantly) {
+                            root.viewport_dragged(dx, dy);
+                        }
                     }
                 }
             }
 
             scroll-event(event) => {
                 focus_scope.focus();
+                root.is_panning = false;
                 root.mouse_x = self.mouse-x / 1px;
                 root.mouse_y = self.mouse-y / 1px;
                 root.viewport_scrolled(self.mouse-x / 1px, self.mouse-y / 1px, event.delta-y / 1px);
@@ -205,7 +237,7 @@ export component MainWindow inherits Window {
 
             double-clicked => {
                 focus_scope.focus();
-                root.viewport_double_clicked();
+                root.viewport_double_clicked(self.mouse-x / 1px, self.mouse-y / 1px);
             }
 
             // Subtle dark background vignette for Picasa photo emphasis
